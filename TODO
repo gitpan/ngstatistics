@@ -1,0 +1,23 @@
+NGStatistics TODO List
+======================
+
+These are features that I believe need to be added.
+
+Last updated: 14 August, 2002.
+
+* Add facility to scan more than one news group.
+* Add MIME support.
+* Find a way to filter "joke" groups from the crossposting stats.
+  This may be a bit difficult, as the newsgroups list varies from
+  server to server. (Will try to do this based on current spool)
+* Give statistics based upon certain keywords in the subject/body.
+* Give the option to post additional text when posting to a newsgroup.
+* Tidy the script up as it's starting to get messy
+
+Things that have been finished:
+* Addtional confirmation messages added before posting.
+* Option to post or not to post.
+* Verbose option expanded.
+* Should work on Windoze.
+* Added facility to email results to people.
+

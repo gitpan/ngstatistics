@@ -1,0 +1,943 @@
+#!/usr/bin/perl
+#############################################################################
+# NGStatistics: Generates statistics from a local news spool and posts      #
+#               them to the NG concerned.                                   #
+#                                                                           #
+# Changes as of 2002/08/14:                                                 #
+#                                                                           #
+# Email facility added, so that statistics can be emailed to someone        #
+#                                                                           #
+# Changes: Mostly minor and the script only works on one NG at a time,      #
+#          however, this script does enable you to post the results.        # 
+#                                                                           #
+# Copyright (C) Neil Lombardo <nlombardo@rosbif.org> 2002                   #
+#############################################################################
+# This script is based on GroupSTAT, and so parts of this program are       #
+# Copyright (C) H. Alex LaHurreau <alexdw@locl.net>, 1999-2000.             #
+#############################################################################
+# This program is based on StatNews, and so parts of this program are       #
+# Copyright (C) Davide G. M. Salvetti <salve@debian.org>, 1998.             #
+#############################################################################
+# This program is free software; you can redistribute it and/or modify      #
+# it under the terms of the GNU General Public License as published by      #
+# the Free Software Foundation; either version 2 of the License, or         #
+# (at your option) any later version.                                       #
+#                                                                           #
+# This program is distributed in the hope that it will be useful,           #
+# but WITHOUT ANY WARRANTY; without even the implied warranty of            #
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the             #
+# GNU General Public License for more details.                              #
+#                                                                           #
+# You should have received a copy of the GNU General Public License         #
+# along with this program; if not, write to the Free Software               #
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA #
+#                                                                           #
+# Alternatively, if you are using Debian GNU/Linux, you should be able to   #
+# find a copy of the GNU General Public License in:                         #
+#     /usr/share/common-licenses/GPL                                        #
+# OR: /usr/doc/copyright/GPL                                                #
+#############################################################################
+
+########################
+### `use' DIRECTIVES ###
+########################
+use strict;
+use locale;		# Use some locale-specific customizations
+use POSIX qw(strftime);	# Hey Perl hackers!  Use strftime()
+use News::Scan;		# Our wonderful OO backend!
+use Mail::Address;	# Quick and easy mail address parsing
+use Getopt::Long;
+use File::Path;		# Yay!  I can create arbitrary paths!	
+use File::Spec;		# Sometimes you just need cross platform compatability
+use File::Basename;	# Ditto above
+# Just in case someone decides to use MIME headers :-)
+use MIME::Words qw(:all);
+
+
+###################################################
+### READ COMMAND-LINE AND ENVIRONMENTAL OPTIONS ###
+###################################################
+
+my %opt;
+if ($_ = $ENV{NGSTATS}) {@_ = split; unshift(@ARGV, @_);}
+GetOptions(\%opt,
+# Options which effect the stats themselves
+'days=i', 'ranklarge|l=i', 'ranksmall|s=i',
+# Options which effect the formatting of the stats
+'width|w=i', 'headstrip|H=s',
+# Options which effect input
+'spool-base|b=s', 'dotted|d=s', 'group|g=s',
+'emailstat|e!', 'emailaddress|ea=s', 'emailname|en=s',
+'emailto|et=s', 'emailtoadd|eta=s',
+# Options which effect output
+'output-file|of=s', 'no-post|np!', 'confirm|c!',
+# Debugging
+'verbose|v!', 'help|usage|h|?',
+) or die "Error parsing options, try --help";
+if($opt{'help'}) { help(); exit 0; }
+
+				
+###########################################
+## THIS IS WHERE YOU SET YOUR VARIABLES  ##
+## THESE ARE SETTINGS USED BY DEFAULT    ##
+## AND CAN BE CHANGED (SEE -help OPTION) ##
+###########################################
+use vars qw(	$VERSION $BACKEND
+		$DAYS $RANKLARGE $RANKSMALL
+		$WIDTH $HEADSTRIP
+		$HOME $SPOOL_BASE $DOTTED 
+		$OUTPUT_FILE
+		$VERBOSE $group
+		$emailname $emailaddress
+		$emailto $emailtoadd
+		$nopost $confirm $emailstat
+          );
+### Number of days over which you wish to scan
+$DAYS           = defined($opt{'days'})        ? $opt{'days'}        : 7;
+### Max Number of items to display in each field
+$RANKLARGE      = defined($opt{'ranklarge'})   ? $opt{'ranklarge'}   : 25;
+### Min Number of items to display in each field
+$RANKSMALL      = defined($opt{'ranksmall'})   ? $opt{'ranksmall'}   : 10;
+### Page width for when the stats file is created
+$WIDTH          = defined($opt{'width'})       ? $opt{'width'}       : 72;
+### Header info (i.e. email info) to be included? 'on' or 'off'
+$HEADSTRIP      = defined($opt{'headstrip'})   ? $opt{'headstrip'}   : 'on';
+### Location of your news spool directory
+$SPOOL_BASE     = defined($opt{'spool-base'})       ? $opt{'spool-base'} : '/var/spool/news';
+### Is the newsgroup in a dotted format (e.g. alt.test)
+$DOTTED         = defined($opt{'dotted'})      ? $opt{'dotted'}      : 'yes';
+### Your $HOME environment
+$HOME           = defined($ENV{'HOME'})        ? $ENV{'HOME'} : File::Spec->rootdir;
+### Output to be verbose or not? Default == off
+$VERBOSE        = defined($opt{'verbose'})    ? $opt{'verbose'} : ''; 
+### The output file for the statistics
+$OUTPUT_FILE    = defined($opt{'output-file'})    ? $opt{'output-file'} : 'output-file';
+### The group you wish to scan
+$group 		= defined($opt{'group'})    ? $opt{'group'} : 'alt.test';
+### To post or not to post 'yes' = post the message, 'no' = don't post
+$nopost          = defined($opt{'no-post'})  ? $opt{'no-post'} : 'yes';
+if ($nopost eq 1)  { $nopost = 'no';};
+### Confirm post of message before posting 'yes' = post the message, 'no' = don't post
+$confirm         = defined($opt{'confirm'})  ? $opt{'confirm'} : 'no';
+if ($confirm eq 1) { $confirm = 'yes';};
+### Email the statistics to someone
+$emailstat      = defined($opt{'emailstat'}) ? $opt{'emailstat'} : 'off';
+if ($emailstat eq 1) { $emailstat = 'on';};
+### The 'From' name
+$emailname      = defined($opt{'emailname'})  ? $opt{'emailname'} : 'Root';
+### The 'From' address (Be aware that if you test this with the default address then it may not be posted.)
+$emailaddress   = defined($opt{'emailaddress'})  ? $opt{'emailaddress'} : 'root';
+### The 'To' name 
+$emailto      = defined($opt{'emailto'})  ? $opt{'emailto'} : 'Root';
+### The 'To' address (Be aware that if you test this with the default address then it may not be posted.)
+$emailtoadd   = defined($opt{'emailtoadd'})  ? $opt{'emailtoadd'} : 'root@localhost';
+
+############################################
+### PRE DEFINED VARIABLES                ###
+############################################
+
+$VERSION	= '1.1';
+$BACKEND	= 'News::Scan';
+
+############################################
+### LOCATION OF SENDMAIL                 ###
+############################################
+
+my $path_to_sendmail = "/usr/sbin/sendmail";
+
+############################################
+### Use line-buffered output             ###
+############################################
+
+$| = 1;		        
+
+############################################
+### Use 'inews' to post the message      ###
+############################################
+
+my $newscmd="/usr/bin/inews";    
+my $newsopts="-h";
+
+############################################
+### PREPARE TO USE $OUTPUT_FILE          ###
+############################################
+
+if ($OUTPUT_FILE) { open_outfile($OUTPUT_FILE) }
+
+#############################################
+### PRINT ON-SCREEN BANNER                ###
+#############################################
+
+if ($VERBOSE)
+{
+print STDERR <<"END BANNER";
+///NGStatistics: Newsgroup Statistics version $VERSION
+///Generates statistics from a *local* news spool
+
+Copyright (C) 2002 Neil Lombardo, but is based on groupstat, which is
+Copyleft  (C) 2000 H. Alex LaHurreau, but is based on StatNews, which is
+Copyleft  (C) 1998 Davide G. M. Salvetti
+
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+END BANNER
+}
+
+##############################################
+### DETERMINE INPUT AND OUTPUT DIRECTORIES ###
+###   (the $output_dir will go to waste    ###
+###     if we are using $OUTPUT_FILE)      ###
+##############################################
+
+my $group_dir	= $group;
+if ($DOTTED eq 'yes')	{ $group_dir =~ s#\.#/#g }
+my $output_dir	= File::Spec->catdir($group_dir);
+my $spool_dir	= File::Spec->catdir($SPOOL_BASE, $group_dir);
+
+###################
+### SET UP SCAN ###
+###################
+
+if ($VERBOSE) { print STDERR "\nScanning $DAYS days of ${group}...";}
+my $scan = new News::Scan     ( Group => $group,
+				From  => 'spool',
+				Spool => $spool_dir,
+				Period => $DAYS,
+			      );
+$scan->scan or die "\nNews::Scan error: " . $scan->error;
+if ($VERBOSE) {print STDERR "done.\n";}
+
+######################
+### GRAB SCAN INFO ###
+######################
+
+my($current, $from, $to, $articles, $chars, $body_chars, $orig_chars, $day);
+$current    = strftime "%a, %d %b %Y %H:%M:%S GMT", gmtime($^T);
+$from       = strftime "%a, %d %b %Y %H:%M:%S GMT", gmtime($scan->earliest);
+$to         = strftime "%a, %d %b %Y %H:%M:%S GMT", gmtime($scan->latest);
+$articles   = $scan->articles;
+$chars      = $scan->volume;
+$body_chars = $scan->body_volume;
+$orig_chars = $scan->orig_volume;
+$day        = strftime "%a, %d %b %Y", gmtime($^T); 
+
+#########################
+### PROCESS SCAN INFO ###
+#########################
+
+my($group_ocr, $sig_percent, $msg_per_day, $char_per_day, $kb_total, $kb_per_day);
+$group_ocr    = 100*($orig_chars/$body_chars);
+$sig_percent  = 100*($scan->signatures)/$articles;
+$msg_per_day  = $articles/$DAYS;
+$char_per_day = $chars/$DAYS;
+$kb_total     = $chars/1024;
+$kb_per_day   = $char_per_day/1024;
+
+##########################
+### MAJOR DATA OBJECTS ###
+##########################
+my($people, $subjects, $cross_groups, $task);
+$people		= $scan->posters;
+$subjects	= $scan->threads;
+$cross_groups	= $scan->crossposts;
+
+##########################
+### PRINT STATS HEADER ###
+##########################
+
+my $old_fh = select OUTFILE;	# $old_fh should be STDOUT, but you never know
+print "\n" if $OUTPUT_FILE;
+
+print center(<<"END HEADER"), "\n\n";
+NGStatistics: Newsgroup Statistics Program
+Version $VERSION (using $BACKEND)
+
+Copyright (C) 2002 Neil Lombardo, 
+Based on groupstat, Copyleft (C) 2000 H. Alex LaHurreau
+Based on StatNews, Copyleft (C) 1998 Davide G. M. Salvetti
+END HEADER
+
+print <<"END EASY";
+Newsgroup.................: $group
+Stats Were Taken..........: $current
+Stats Begin...............: $from
+Stats End.................: $to
+Days......................: $DAYS
+Total No. of Articles.....: $articles
+Total No. of Characters...: $chars
+END EASY
+printf("Total Volume..............: %d\n", $kb_total);
+printf("Messages Per Day..........: %.1f\n", $msg_per_day);
+printf("Characters Per Day........: %.1f\n", $char_per_day);
+printf("Average Daily Volume......: %d kB\n", $kb_per_day);
+printf("Total Posters This Week...: %d\n", (scalar keys %{$people}));
+printf("Messages with Sigs........: %.2f%%\n", $sig_percent);
+printf("Original Content Rating...: %.2f%%\n", $group_ocr);
+
+######################
+### RETRIEVE STATS ###
+######################
+my $i;	# counter variable used in many places
+
+### Top number of prolific posters
+
+$task = "Top $RANKLARGE Prolific Posters";
+if ($VERBOSE) { print STDERR "Getting $task...";}
+$i = 0; line();
+print underline("$task: Posts / Posts per Day / Percent Share");
+foreach my $addr (sort { ($people->{$b}->articles) <=> ($people->{$a}->articles)
+                          || $people->{$a}->attrib cmp $people->{$b}->attrib }
+		  keys %{$people}) 
+		  {
+	           my $name  = headstrip($people->{$addr}->attrib);
+	           my $posts = $people->{$addr}->articles;
+	           printf "%3d. %s: %3d %4.1f %4.1f%%\n", ++$i, dotline($WIDTH - 22, $name),
+		            $posts, $posts/$DAYS, 100*$posts/$articles;
+	           last if ($i >= $RANKLARGE);
+                  }
+if ($VERBOSE) {print STDERR "done.\n";}
+
+### Top number of Bandwidth-Slurping Posters
+
+$task = "Top $RANKLARGE Bandwidth-Slurping Posters";
+if ($VERBOSE) { print STDERR "Getting $task...";}
+$i = 0; line();
+print underline("$task: kBytes / kBytes per Day / Percent Share");
+foreach my $addr (sort { ($people->{$b}->volume) <=> ($people->{$a}->volume)
+                          || $people->{$a}->attrib cmp $people->{$b}->attrib }
+	          keys %{$people}) 
+		  {
+	           my $name   = headstrip($people->{$addr}->attrib);
+	           my $bytes  = $people->{$addr}->volume;
+	           my $kbytes = $bytes/1024;
+	           printf "%3d. %s: %3d %4.1f %4.1f%%\n", ++$i, dotline($WIDTH - 22, $name),
+		              $kbytes, $kbytes/$DAYS, 100*$bytes/$chars;
+	           last if ($i >= $RANKLARGE);
+                  }
+if ($VERBOSE) {print STDERR "done.\n";}
+
+### Top number of Popular Threads
+
+$task = "Top $RANKLARGE Popular Threads";
+if ($VERBOSE) {print STDERR "Getting $task...";}
+$i = 0; line();
+print underline("$task: Posts / Posts per Day / Percent Share");
+foreach my $subj 
+  (sort { ($subjects->{$b}->articles) <=> ($subjects->{$a}->articles)
+	  || $a cmp $b }
+   keys %{$subjects}) 
+          {
+	   my $posts = $subjects->{$subj}->articles;
+	   printf "%3d. %s: %3d %4.1f %4.1f%%\n", ++$i, dotline($WIDTH - 22, $subj),
+	        	$posts, $posts/$DAYS, 100*$posts/$articles;
+	   last if ($i >= $RANKLARGE);
+          }
+if ($VERBOSE) {print STDERR "done.\n";}
+
+### Top number of Bandwidth-Slurping Threads
+
+$task = "Top $RANKLARGE Bandwidth-Slurping Threads";
+if ($VERBOSE) {print STDERR "Getting $task...";}
+$i = 0; line();
+print underline("$task: kBytes / kBytes per Day / Percent Share");
+foreach my $subj 
+  (sort { ($subjects->{$b}->volume) <=> ($subjects->{$a}->volume)
+	  || $a cmp $b }
+   keys %{$subjects}) 
+       {
+	my $bytes  = $subjects->{$subj}->volume;
+	my $kbytes = $bytes/1024;
+	printf "%3d. %s: %3d %4.1f %4.1f%%\n", ++$i, dotline($WIDTH - 22, $subj),
+		  $kbytes, $kbytes/$DAYS, 100*$bytes/$chars;
+	last if ($i >= $RANKLARGE);
+       }
+if ($VERBOSE) { print STDERR "done.\n";}
+
+# Fill up %me_too for the OCR stats
+my %me_too;
+foreach my $addr (keys %{$people}) 
+       {
+	 next unless ($people->{$addr}->articles >= 5);
+	 $me_too{$addr} = 
+		$people->{$addr}->orig_volume / $people->{$addr}->body_volume;
+       }
+
+### Top number of Original Content Ratings
+
+$task = "Top $RANKSMALL Original Content Ratings";
+if ($VERBOSE) {print STDERR "Getting $task...";}
+$i = 0; line();
+print underline("$task: (Original Bytes) / (All Bytes)");
+foreach my $addr (sort { ($me_too{$b}) <=> ($me_too{$a})
+                          || $people->{$a}->attrib cmp $people->{$b}->attrib }
+		  keys %me_too) 
+		  {
+	           my $name = headstrip($people->{$addr}->attrib);
+	           printf "%3d. %s: %5.1f%%\n", ++$i, dotline($WIDTH - 14, $name), 100*$me_too{$addr};
+	           last if ($i >= $RANKSMALL);
+                  }
+if ($VERBOSE) { print STDERR "done.\n";}
+
+### Bottom  number of Original Content Ratings
+
+$task = "Bottom $RANKSMALL Original Content Ratings";
+if ($VERBOSE) { print STDERR "Getting $task...";}
+$i = 0; line();
+print underline("$task: (Original Bytes) / (All Bytes)");
+foreach my $addr (sort { ($me_too{$a}) <=> ($me_too{$b})
+                          || $people->{$a}->attrib cmp $people->{$b}->attrib }
+		  keys %me_too) 
+		  {
+	           my $name = headstrip($people->{$addr}->attrib);
+	           printf "%3d. %s: %5.1f%%\n", ++$i, dotline($WIDTH - 14, $name), 100*$me_too{$addr};
+	           last if ($i >= $RANKSMALL);
+                  }
+if ($VERBOSE) {print STDERR "done.\n";}
+
+### Top number of Crossposting Groups
+
+$task = "Top $RANKSMALL Crossposting Groups";
+if ($VERBOSE) { print STDERR "Getting $task...";}
+$i = 0; line();
+print underline("$task: Posts in Group");
+foreach my $group (sort { ($cross_groups->{$b}) <=> ($cross_groups->{$a})
+                           || $a cmp $b }
+		   keys %{$cross_groups}) 
+		   {
+	            my $posts = $cross_groups->{$group};
+	            printf "%3d. %s: %3d\n", ++$i, dotline($WIDTH - 11, $group), $posts;
+	            last if ($i >= $RANKSMALL);
+                   }
+if ($VERBOSE) { print STDERR "done.\n";}
+
+### End of statistics calculations
+
+line(); print overline("End of stats for $group");
+print "\n" if $OUTPUT_FILE;
+close OUTFILE unless $OUTPUT_FILE;
+if ($VERBOSE) { print STDERR "Statistics complete for ${group}!\n";}
+select $old_fh;	 # in case I want to do something with it
+
+###########################################################
+###                POST THIS TO THE NG                  ###
+###########################################################
+
+if ($nopost eq 'yes')
+{
+ if ($confirm eq 'yes')
+ { 
+  print "\nSending this message to '$group' using the email address\n";
+  print "'$emailaddress' and the email name '$emailname'\n\n";
+  print "Are you sure you want to do this?\n";
+  my $answer= <STDIN>;
+  chop $answer;
+  if ($answer eq "no" || $answer eq "NO" || $answer eq "No" || $answer eq "N" || $answer eq "n")
+   {
+    print "\nThis message has not been posted to the newgroup $group.\n";
+    print "\nStatistics stored in '$OUTPUT_FILE'\n";
+    exit 0;
+   }
+  }
+open (NEWS,"| $newscmd $newsopts");
+print NEWS "From: $emailname <$emailaddress>\n";
+print NEWS "Subject: OT: Newsgroup statistics dated $day\n";
+print NEWS "Newsgroups: $group\n";
+print NEWS "Organization: UKRM\n";
+print NEWS "Summary:\n";
+print NEWS "Mail-Copies-To: never\n";
+print NEWS "User-Agent: Newsgroup statistics.\n";
+print NEWS "MIME-Version: 1.0\n";
+print NEWS "Content-Type: text/plain; charset=ISO-8859-1\n";
+print NEWS "Content-Transfer-Encoding: 8bit\n";
+print NEWS "\n\n";
+
+open(MYINPUTFILE, "<$OUTPUT_FILE");
+my(@lines) = <MYINPUTFILE>;       
+my($line);
+foreach $line (@lines)           
+ {
+  print NEWS "$line";             
+ }
+close(MYINPUTFILE);
+
+close (NEWS);
+
+if ($VERBOSE) 
+ { 
+  print "\nStatistics stored in '$OUTPUT_FILE'\n";
+  print "\nStatistics also posted\n";
+  print STDERR "\nAll statistics complete!\n";
+  #exit 0;
+ }
+}
+else
+{
+ if ($VERBOSE) 
+  { 
+   print "This message has not been posted to the newsgroup $group.\n";
+   print "\nStatistics have been stored in '$OUTPUT_FILE'\n";
+  }
+  # exit 0;
+}
+
+###########################################################
+###                EMAIL THIS TO A USER                 ###
+###########################################################
+
+if ($emailstat eq "on")
+{
+  if ($VERBOSE)
+  { 
+    if(-x $path_to_sendmail)
+      {
+       print "Found sendmail at $path_to_sendmail.\n";
+      }
+    else 
+      {
+       print "Oops, could not find $path_to_sendmail.\n";
+       print "We will not be able to send mail unless you set\n";
+       print "$path_to_sendmail correctly in the script!\n\n";
+       print "Now exiting the script.\n";
+       exit 0;
+      }
+  }
+   if ($confirm eq 'yes')
+    {
+     print "\nSending these statistics to '$emailto <$emailtoadd>' from email address\n";
+     print "'$emailname <$emailaddress>'\n\n";
+     print "Are you sure you want to do this?\n";
+     my $answer= <STDIN>;
+     chop $answer;
+     if ($answer eq "no" || $answer eq "NO" || $answer eq "No" || $answer eq "N" || $answer eq "n")
+      {
+       print "\nThis message has not been emailed.\n";
+       print "\nStatistics stored in '$OUTPUT_FILE'\n";
+       exit 0;
+      }
+     }
+
+  open (MAIL,"|$path_to_sendmail -t") || &debug("Cannot open sendmail: $!");
+  print MAIL "To: $emailto <$emailtoadd>\n";
+  print MAIL "Subject: OT: Newsgroup statistics dated $day\n";
+  print MAIL "From: $emailname <$emailaddress>\n";
+  open(MYINPUTFILE, "<$OUTPUT_FILE");
+  my(@lines) = <MYINPUTFILE>;
+  my($line);
+  foreach $line (@lines)
+    {
+     print MAIL "$line";
+    }
+  close(MYINPUTFILE);
+  close(MAIL) || &debug("Problems closing sendmail: $! $?");
+  if ($VERBOSE)
+    {
+     print "\nStatistics stored in '$OUTPUT_FILE'\n";
+     print "\nStatistics also emailed to $emailto <$emailtoadd>\n";
+     print "\nStatistics sent by $emailname <$emailaddress>\n";
+     exit 0;
+    }
+}
+else 
+{
+  print "\nThis message has not been emailed.\n";
+}
+
+###################
+### SUBROUTINES ###
+###################
+# center: Center the argument string and return it.
+sub center 
+{
+ my @lines = split("\n", join('', @_));
+ my @formatted; my $i=0;
+ foreach my $line (@lines) 
+ {
+  $formatted[$i++] = ' ' x (($WIDTH - length($line))/2) . $line;
+ }
+ return join("\n", @formatted);
+}
+
+# dotline: Take the string and pad it right with dots.
+
+sub dotline 
+{
+ my ($len, $line) = @_;
+ my $fmt = sprintf("%%.%ds%%s", $len);
+  return sprintf($fmt, $line, '.' x ($len - length($line)));
+}
+
+# underline: Underline the argument string and return it.
+
+sub underline 
+{
+ my $line = shift;
+ return sprintf("%s\n%s\n", $line, '=' x length($line));
+}
+
+# overline: Overline the argument string and return it. (based on underline :-)
+
+sub overline 
+{
+ my $line = shift;
+ return sprintf("%s\n%s\n", '=' x length($line), $line);
+}
+
+# line: print a newline to currently selected filehandle
+
+sub line { print "\n" }
+
+# headstrip: returns just the name part of the From: field
+
+sub headstrip 
+{
+ if($HEADSTRIP eq "on") 
+ {
+  my $from = shift;
+  my @addrs = Mail::Address->parse($from);
+  if (($#addrs > 0) && $VERBOSE) 
+  {
+   # There should only be one address
+   # listed in the From: header for news
+   warn "Too many addresses";
+  }
+  my $addr = $addrs[0];
+  unless(ref $addr) 
+  {
+   warn "Didn't get Mail::Address object" if $VERBOSE;
+   return $from;
+  }
+  return ($addr->name) || ($addr->user);
+ } else { return shift }
+}
+
+# open_outfile: opens the specified file as OUTFILE (w/ paranoia)
+
+sub open_outfile 
+{
+ my $output_file	= shift;
+ my $output_dir	= dirname($output_file);
+ stat $output_dir;
+ if ((-e _) && (-d _) &&!(-w _)) { die "Can't write to $output_dir" }
+ if ((-e _) &&!(-d _))           { die "$output_dir already exists, but isn't a directory" }
+ if (!(-e _))                    { mkpath($output_dir, $VERBOSE, 0777) }
+ open OUTFILE, ">$output_file"
+ 	or die "Can't open ${output_file}\n\tfor output: $!";
+}
+
+# help: prints out usage information 
+
+sub help 
+{
+ print <<"END USAGE INFO";
+Usage: $0 [options] <newsgroup1> 
+  --usage, --help, -h, -?	Print this message
+  
+  --days			Number of days in the past to scan 
+  				(d: 7)
+  --ranklarge, -l		Number of items shown in major categories 
+  				(d: 25)
+  --ranksmall, -s		Number of items shown in minor categories 
+  				(d: 10)
+  --width, -w			Width of output lines in columns 
+  				(d: 72)
+  --headstrip, -H		Turn on 'From:' header processing 
+  				(d: on)
+  --spool-base,	-b		Base location for the news spool 
+  				(d: /var/spool/news)
+  --dotted, -d 			Replace '.' with '/' in newsgroup names 
+  				(d: yes)
+  --verbose, -v			Turn on a few helpful debugging messages 
+  				(d: off)
+  --output-file, -of		Specific single file to store STATS in 
+  				(d: output-file)
+  --group, -g			Newsgroup to get statistics for 
+  				(d: alt.test)
+  --no-post, -np		Post to the Newsgroup or not 
+  				(d: yes)
+  --confirm, -c                 Confirm post to NG 
+  				(d: no)
+  --emailstat, -e               Email to statistics file to someone
+  				(d: off)
+  --emailaddress, -ea		From Email address for the above command
+  				(d: root\@localhost)
+  --emailname, -en		From Email name for the above command
+  				(d: Root)
+  --emailtoadd, -eta		To Email address for the above command
+  				(d: root\@localhost)
+  --emailtoname, -et		To Email name for the above command
+  				(d: Root)
+				  
+Defaults are shown in parentheses like this: (d: default)
+
+END USAGE INFO
+}
+
+
+__END__
+
+=pod
+
+=head1 NAME
+
+ngstatistics - Generates statistics from a local news spool
+
+=head1 SYNOPSIS
+
+B<ngstatistics> [I<options>] I<newsgroup>
+
+=head1 DESCRIPTION
+
+B<NGStatistics> is an advanced newsgroup statistics program.  With the help of 
+the I<News::Scan> module, B<NGStatistics> scans the articles in the newsgroup 
+of your choice and prints various statistics from them.  You could look at 
+these statistics for your own amusement, or you post them to a newsgroup. 
+
+=head1 OPTIONS
+
+=head2 Debugging/Help Options
+
+=over 8
+
+=item B<--usage, --help, -?, -h>
+
+Prints a short usage message, then exits.
+
+=item B<--verbose, -v>
+
+Enables a few helpful debugging messages.  Might also be useful for submitting 
+bug reports.  
+
+This facility is turned off by default.
+
+=item B<--no-post, -np>
+
+This option specifies whether the file should be posted to the newgroup that's 
+being scanned. If this option is not specified, then the default option will 
+be used.
+
+The default option posts the message to the newsgroup.
+
+=item B<--emailstat, -e>
+
+Email to statistics file to someone.
+
+This option is turned off by default.
+
+=item B<--emailaddress, -ea>
+
+This is the 'from' Email address that will be used if the statistics are to be emailed.
+This option is only used if the '--emailstat' option is chosen
+
+The default from address is 'root@localhost'
+
+=item B<--emailname, -en>
+
+This is the 'from' Email name that will be used in conjuction with the 'from' Email address.
+This option is only used if the '--emailstat' option is chosen
+
+The default from name is 'Root'
+
+=item B<--emailtoadd, -eta>
+
+This is the 'to' Email address that will be used if the statistics are to be emailed.
+This option is only used if the '--emailstat' option is chosen
+
+The default to address is 'root@localhost'
+
+=item B<--emailtoname, -et>
+
+This is the 'to' Email name that will be used if the statistics are to be emailed.
+This option is only used if the '--emailstat' option is chosen
+
+The default to name is 'Root'
+
+=item B<--confirm, -c>
+
+This option when set will ask for confirmation before posting the message to 
+the newsgroup. 
+
+This setting has no effect if the '--no-post' option is set.
+
+The default is that the message is posted to the group.
+
+=back
+
+=head2 Scan Options
+
+=over 8
+
+=item B<--days>
+
+Sets the number of days in the past B<NGStatistics> should scan.
+
+The default is one week (i.e. 7 days).  See L<"NOTES">.
+
+=item B<--ranklarge, -l>
+
+Sets the number of items printed in the 'major' categories.
+
+Both of the 'Posters' and 'Threads' categories are considered major.  
+
+The default is 25.
+
+=item B<--ranksmall, -s>
+
+Sets the number of items printed in the 'minor' categories.
+
+Both of the 'Original Content Ratings' categories and the crossposting category
+are considered minor.  
+
+The default is 10.
+
+=back
+
+=head2 Formatting Options
+
+=over 8
+
+=item B<--width, -w>
+
+Sets the width of the printed lines in columns.  
+
+The default is 72 and should be acceptable for most purposes.
+
+=item B<--headstrip, -H>
+
+This option enables the use of the C<headstrip> routine.  This routine attempts
+to remove the email address from poster names before printing out results.  
+If you do not want this, or if your I<Mail::Address> module is buggy, then set 
+this option to off
+
+The default is on.
+
+=back
+
+=head2 Input Options
+
+=over 8
+
+=item B<--spool-base, -s>
+
+Sets the base directory of your local news spool.  This specifies the root of 
+your spool, B<not> the exact directory where articles are stored.  
+
+The default is: I</var/spool/news>
+
+=item B<--dotted, -d>
+
+Replace '.' with '/' in newsgroup names.  This only applies when using the 
+--spool-base option.  
+
+The default is to do the replacement.
+
+=back
+
+=head2 Output Options
+
+=over 8
+
+=item B<--output-file, -of>
+
+Specifies a single file to store statistics in.
+
+The default is set to I<output-file>
+
+=back
+
+=head1 ENVIRONMENT
+
+B<NGStatistics> reads the contents of the environmental variable C<NGSTATS> on 
+startup.  If you want to set default options for this program, put them here. 
+They will be read as if they were normal command line options.
+
+Default variables can also be set by editing this script at the start. 
+
+B<NGStatistics> also makes use of the C<HOME> variable to determine where to 
+place output files in the event that the B<--output-file> option was specified.
+
+=head1 EXAMPLES
+
+Scan 'rec.arts.drwho' from seven days ago until now, getting articles from 
+C</var/spool/news>, putting the output file into C</News/STATS>:
+
+	ngstatistics --group rec.arts.drwho -of=/News/STATS
+
+Scan 'rec.arts.drwho' from seven days ago until now, getting articles from 
+C</var/spool/news>, putting the output file into C</News/STATS>, do not post
+them, but email them to 'toto@toto.com' from 'toto2@toto.com', where both
+the email to and from names are 'Toto'. Also use the verbose and confirm options:
+
+	ngstatistics --group rec.arts.drwho -of=/News/STATS -np -e
+	-en Toto -emailaddress toto@toto.com -eta toto2@toto.com -et Toto
+	-v -c
+
+Scan three days of 'alt.sysadmin.recovery', getting articles from C</tmp/asr> 
+and putting output into C</tmp/asr-stats.txt>:
+
+	ngstatistics --spool-base=/tmp/asr -of=/tmp/asr-stats.txt 
+	--group alt.sysadmin.recovery
+
+Scan the top 50's for 'news.admin.net-abuse.usenet' with default options:
+
+	ngstatistics -N50 -n50 --group news.admin.net-abuse.usenet
+
+=head1 NOTES
+
+In order to use the B<--days> option, you must have that many days of articles
+in your 'spool-base'.  If you don't, B<NGStatistics> will not correct your 
+error and the stats will be skewed.  This means that if you want to use the
+default, you must have I<at least> a week's worth of articles on spool.
+
+If you are constantly resetting the defaults, you may want to define the 
+C<NGSTATS> environmental variable.
+
+In F<~/.bashrc> (Unix platforms):
+
+	export NGSTATS=options
+
+In F<AUTOEXEC.BAT> (M$-DoS type systems):
+
+	SET NGSTATS=options
+
+You can also edit the default options by modifying the start of the script.
+
+=head1 WARNINGS
+
+If you post statistics about a newsgroup to that newsgroup on a regular basis, 
+you may end up starting a series of everlasting flamewars.  Be warned!
+
+=head1 BUGS
+
+Still quite a few. Email me with any bugs that you find at:
+E<lt>nlombardo@rosbif.orgE<gt>.
+
+=head1 AUTHOR
+
+B<NGStatistics> was written by Neil Lombardo E<lt>nlombardo@rosbif.orgE<gt>.
+
+=head1 HISTORY
+
+B<NGStatistics> is based on B<GroupSTAT>, which was
+written by H. Alex LaHurreau E<lt>alexdw@locl.netE<gt> which was
+originally based upon B<StatNews> by Davide G. M. Salvetti E<lt>salve@debian.orgE<gt>.
+
+=head1 COPYRIGHT
+
+Copyright © 2002 Neil Lombardo.
+This is free software; see the source for copying conditions.  
+There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A 
+PARTICULAR PURPOSE.
+
+=head1 SEE ALSO
+
+You may find L<News::Scan> of interest.  
+
+Also at:
+
+L<http://search.cpan.org/doc/GBACON/News-Scan-0.51/News/Scan.pm>
+
+My homepage at L<http://www.rosbif.org> has very little perl stuff on at the 
+moment, but that's because I'm still new at releasing software! 
+
+=cut
+

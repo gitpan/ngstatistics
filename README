@@ -1,0 +1,225 @@
+NAME
+    ngstatistics - Generates statistics from a local news spool
+
+SYNOPSIS
+    ngstatistics [*options*] *newsgroup*
+
+DESCRIPTION
+    NGStatistics is an advanced newsgroup statistics program. With the help
+    of the *News::Scan* module, NGStatistics scans the articles in the
+    newsgroup of your choice and prints various statistics from them. You
+    could look at these statistics for your own amusement, or you post them
+    to a newsgroup.
+
+OPTIONS
+  Debugging/Help Options
+
+    --usage, --help, -?, -h
+            Prints a short usage message, then exits.
+
+    --verbose, -v
+            Enables a few helpful debugging messages. Might also be useful
+            for submitting bug reports.
+
+            This facility is turned off by default.
+
+    --no-post, -np
+            This option specifies whether the file should be posted to the
+            newgroup that's being scanned. If this option is not specified,
+            then the default option will be used.
+
+            The default option posts the message to the newsgroup.
+
+    --emailstat, -e
+            Email to statistics file to someone.
+
+            This option is turned off by default.
+
+    --emailaddress, -ea
+            This is the 'from' Email address that will be used if the
+            statistics are to be emailed. This option is only used if the
+            '--emailstat' option is chosen
+
+            The default from address is 'root@localhost'
+
+    --emailname, -en
+            This is the 'from' Email name that will be used in conjuction
+            with the 'from' Email address. This option is only used if the
+            '--emailstat' option is chosen
+
+            The default from name is 'Root'
+
+    --emailtoadd, -eta
+            This is the 'to' Email address that will be used if the
+            statistics are to be emailed. This option is only used if the
+            '--emailstat' option is chosen
+
+            The default to address is 'root@localhost'
+
+    --emailtoname, -et
+            This is the 'to' Email name that will be used if the statistics
+            are to be emailed. This option is only used if the '--emailstat'
+            option is chosen
+
+            The default to name is 'Root'
+
+    --confirm, -c
+            This option when set will ask for confirmation before posting
+            the message to the newsgroup.
+
+            This setting has no effect if the '--no-post' option is set.
+
+            The default is that the message is posted to the group.
+
+  Scan Options
+
+    --days  Sets the number of days in the past NGStatistics should scan.
+
+            The default is one week (i.e. 7 days). See the section on
+            "NOTES".
+
+    --ranklarge, -l
+            Sets the number of items printed in the 'major' categories.
+
+            Both of the 'Posters' and 'Threads' categories are considered
+            major.
+
+            The default is 25.
+
+    --ranksmall, -s
+            Sets the number of items printed in the 'minor' categories.
+
+            Both of the 'Original Content Ratings' categories and the
+            crossposting category are considered minor.
+
+            The default is 10.
+
+  Formatting Options
+
+    --width, -w
+            Sets the width of the printed lines in columns.
+
+            The default is 72 and should be acceptable for most purposes.
+
+    --headstrip, -H
+            This option enables the use of the "headstrip" routine. This
+            routine attempts to remove the email address from poster names
+            before printing out results. If you do not want this, or if your
+            *Mail::Address* module is buggy, then set this option to off
+
+            The default is on.
+
+  Input Options
+
+    --spool-base, -s
+            Sets the base directory of your local news spool. This specifies
+            the root of your spool, not the exact directory where articles
+            are stored.
+
+            The default is: */var/spool/news*
+
+    --dotted, -d
+            Replace '.' with '/' in newsgroup names. This only applies when
+            using the --spool-base option.
+
+            The default is to do the replacement.
+
+  Output Options
+
+    --output-file, -of
+            Specifies a single file to store statistics in.
+
+            The default is set to *output-file*
+
+ENVIRONMENT
+    NGStatistics reads the contents of the environmental variable "NGSTATS"
+    on startup. If you want to set default options for this program, put
+    them here. They will be read as if they were normal command line
+    options.
+
+    Default variables can also be set by editing this script at the start.
+
+    NGStatistics also makes use of the "HOME" variable to determine where to
+    place output files in the event that the --output-file option was
+    specified.
+
+EXAMPLES
+    Scan 'rec.arts.drwho' from seven days ago until now, getting articles
+    from "/var/spool/news", putting the output file into "/News/STATS":
+
+            ngstatistics --group rec.arts.drwho -of=/News/STATS
+
+    Scan 'rec.arts.drwho' from seven days ago until now, getting articles
+    from "/var/spool/news", putting the output file into "/News/STATS", do
+    not post them, but email them to 'toto@toto.com' from 'toto2@toto.com',
+    where both the email to and from names are 'Toto'. Also use the verbose
+    and confirm options:
+
+            ngstatistics --group rec.arts.drwho -of=/News/STATS -np -e
+            -en Toto -emailaddress toto@toto.com -eta toto2@toto.com -et Toto
+            -v -c
+
+    Scan three days of 'alt.sysadmin.recovery', getting articles from
+    "/tmp/asr" and putting output into "/tmp/asr-stats.txt":
+
+            ngstatistics --spool-base=/tmp/asr -of=/tmp/asr-stats.txt 
+            --group alt.sysadmin.recovery
+
+    Scan the top 50's for 'news.admin.net-abuse.usenet' with default
+    options:
+
+            ngstatistics -N50 -n50 --group news.admin.net-abuse.usenet
+
+NOTES
+    In order to use the --days option, you must have that many days of
+    articles in your 'spool-base'. If you don't, NGStatistics will not
+    correct your error and the stats will be skewed. This means that if you
+    want to use the default, you must have *at least* a week's worth of
+    articles on spool.
+
+    If you are constantly resetting the defaults, you may want to define the
+    "NGSTATS" environmental variable.
+
+    In ~/.bashrc (Unix platforms):
+
+            export NGSTATS=options
+
+    In AUTOEXEC.BAT (M$-DoS type systems):
+
+            SET NGSTATS=options
+
+    You can also edit the default options by modifying the start of the
+    script.
+
+WARNINGS
+    If you post statistics about a newsgroup to that newsgroup on a regular
+    basis, you may end up starting a series of everlasting flamewars. Be
+    warned!
+
+BUGS
+    Still quite a few. Email me with any bugs that you find at:
+    <nlombardo@rosbif.org>.
+
+AUTHOR
+    NGStatistics was written by Neil Lombardo <nlombardo@rosbif.org>.
+
+HISTORY
+    NGStatistics is based on GroupSTAT, which was written by H. Alex
+    LaHurreau <alexdw@locl.net> which was originally based upon StatNews by
+    Davide G. M. Salvetti <salve@debian.org>.
+
+COPYRIGHT
+    Copyright © 2002 Neil Lombardo. This is free software; see the source
+    for copying conditions. There is NO warranty; not even for
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+SEE ALSO
+    You may find the News::Scan manpage of interest.
+
+    Also at:
+
+    http://search.cpan.org/doc/GBACON/News-Scan-0.51/News/Scan.pm
+
+    My homepage at http://www.rosbif.org has very little perl stuff on at
+    the moment, but that's because I'm still new at releasing software!
+
